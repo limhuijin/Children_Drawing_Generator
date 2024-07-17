@@ -1,89 +1,80 @@
-# 라이브러리 임포트
 import pandas as pd
-import tensorflow as tf
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, UpSampling2D
-import numpy as np
 import os
+from PIL import Image
+import numpy as np
+import torch
+from torch import nn, optim
+from torchvision.utils import save_image
+from torchvision.transforms import transforms
+from torch.utils.data import DataLoader, Dataset
+import matplotlib.pyplot as plt
 
-# CSV 파일 불러오기
-csv_file1 = '/mnt/data/Painting_Creativity_Tester_05.csv'
-csv_file2 = '/mnt/data/Painting_Creativity_Tester_06.csv'
+# 데이터 불러오기
+data1 = pd.read_csv('C:/Users/user/Desktop/coding/Painting_Creativity_Tester/csv/Painting_Creativity_Tester_05.csv')
+data2 = pd.read_csv('C:/Users/user/Desktop/coding/Painting_Creativity_Tester/csv/Painting_Creativity_Tester_06.csv')
+data = pd.concat([data1, data2], ignore_index=True)
 
-df1 = pd.read_csv(csv_file1)
-df2 = pd.read_csv(csv_file2)
+# 이미지 파일 경로 설정
+image_dir = 'C:/Users/user/Desktop/coding/Painting_Creativity_Tester/images/'
+data['image_path'] = [os.path.join(image_dir, f) + '.png' for f in data['FileName']]
 
-import ace_tools as tools; tools.display_dataframe_to_user("Painting Creativity Tester 05", df1)
-tools.display_dataframe_to_user("Painting Creativity Tester 06", df2)
+# 이미지 로드 및 전처리
+class ImageDataset(Dataset):
+    def __init__(self, file_paths):
+        self.file_paths = file_paths
+        self.transform = transforms.Compose([
+            transforms.Resize((64, 64)),
+            transforms.ToTensor(),
+        ])
+    
+    def __len__(self):
+        return len(self.file_paths)
+    
+    def __getitem__(self, idx):
+        img = Image.open(self.file_paths[idx])
+        img = self.transform(img)
+        return img
 
-# 이미지 데이터 경로 설정
-image_directory = '/path/to/childrens_drawings'
+dataset = ImageDataset(data['image_path'])
+dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-# 이미지 데이터 전처리를 위한 ImageDataGenerator 설정
-datagen = ImageDataGenerator(
-    rescale=1.0/255.0, # 픽셀 값 정규화
-    validation_split=0.2 # 훈련 및 검증 세트로 분할
-)
+# 생성기(Generator)와 판별기(Discriminator) 클래스 정의
+class Generator(nn.Module):
+    def __init__(self):
+        super(Generator, self).__init__()
+        # [생성기 네트워크 레이어]
 
-# 훈련 데이터 로드
-train_generator = datagen.flow_from_directory(
-    image_directory,
-    target_size=(128, 128), # 이미지를 128x128로 리사이즈
-    batch_size=32,
-    class_mode='input', # 오토인코더 사용
-    subset='training'
-)
+class Discriminator(nn.Module):
+    def __init__(self):
+        super(Discriminator, self).__init__()
+        # [판별기 네트워크 레이어]
 
-# 검증 데이터 로드
-validation_generator = datagen.flow_from_directory(
-    image_directory,
-    target_size=(128, 128),
-    batch_size=32,
-    class_mode='input',
-    subset='validation'
-)
+# 모델, 손실 함수 및 최적화기 초기화
+generator = Generator()
+discriminator = Discriminator()
+criterion = nn.BCELoss()
+optimizerG = optim.Adam(generator.parameters(), lr=0.0002, betas=(0.5, 0.999))
+optimizerD = optim.Adam(discriminator.parameters(), lr=0.0002, betas=(0.5, 0.999))
 
-# 오토인코더 모델 정의
-input_img = Input(shape=(128, 128, 3))
+# 이미지 저장 디렉터리
+os.makedirs('generated_images', exist_ok=True)
 
-# 인코더
-x = Conv2D(64, (3, 3), activation='relu', padding='same')(input_img)
-x = MaxPooling2D((2, 2), padding='same')(x)
-x = Conv2D(128, (3, 3), activation='relu', padding='same')(x)
-x = MaxPooling2D((2, 2), padding='same')(x)
+# 학습 루프
+for epoch in range(50):  # 에폭 수
+    for i, images in enumerate(dataloader):
+        # [학습 루프]
 
-# 디코더
-x = Conv2D(128, (3, 3), activation='relu', padding='same')(x)
-x = UpSampling2D((2, 2))(x)
-x = Conv2D(64, (3, 3), activation='relu', padding='same')(x)
-x = UpSampling2D((2, 2))(x)
-decoded = Conv2D(3, (3, 3), activation='sigmoid', padding='same')(x)
+        # 특정 간격으로 생성된 이미지 저장 및 표시
+        if (i+1) % 100 == 0:
+            with torch.no_grad():
+                fake_images = generator(noise)
+                save_image(fake_images, f'generated_images/{epoch+1}_{i+1}.png', normalize=True)
+    
+    # 에폭마다 생성된 이미지 시각화
+    plt.figure(figsize=(10, 10))
+    plt.imshow(np.transpose(fake_images.cpu().data.numpy()[0], (1, 2, 0)))
+    plt.axis('off')
+    plt.title(f'Images at Epoch {epoch+1}')
+    plt.show()
 
-# 오토인코더 모델 컴파일
-autoencoder = Model(input_img, decoded)
-autoencoder.compile(optimizer='adam', loss='binary_crossentropy')
-
-autoencoder.summary()
-
-# 모델 훈련
-history = autoencoder.fit(
-    train_generator,
-    epochs=50,
-    validation_data=validation_generator
-)
-
-# 새로운 이미지 생성
-num_images_to_generate = 5
-random_latent_vectors = np.random.normal(size=(num_images_to_generate, 128, 128, 3))
-
-generated_images = autoencoder.predict(random_latent_vectors)
-
-# 생성된 이미지를 저장할 디렉토리 설정
-save_directory = '/path/to/save/generated_images'
-os.makedirs(save_directory, exist_ok=True)
-
-# 생성된 이미지 저장
-for i, img in enumerate(generated_images):
-    save_path = os.path.join(save_directory, f'generated_image_{i}.png')
-    tf.keras.preprocessing.image.save_img(save_path, img)
+print('Training complete.')
