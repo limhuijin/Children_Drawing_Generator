@@ -1,92 +1,149 @@
 import os
 import tensorflow as tf
-from tensorflow.keras import layers, Input
+from tensorflow.keras import layers
+import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
-def load_and_preprocess_image(path):
-    image = tf.io.read_file(path)
-    image = tf.image.decode_png(image, channels=3)
-    image = tf.image.resize(image, [64, 64])
-    image = (image - 127.5) / 127.5
-    return image
+# 데이터셋 로드 및 전처리
+def load_data():
+    dataset_path = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/dataset/dataset.npy'
+    train_images = np.load(dataset_path)
+    train_images = train_images.astype('float32')
+    train_images = (train_images - 127.5) / 127.5  # 정규화 [-1, 1]로
+    return train_images
 
-csv_path = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/csv/Painting_Creativity_Tester_05.csv'
-data = pd.read_csv(csv_path)
-image_dir = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/images/'
-image_paths = [os.path.join(image_dir, f"{file_name}.png") for file_name in data['FileName']]
-image_dataset = tf.data.Dataset.from_tensor_slices(image_paths)
-image_dataset = image_dataset.map(load_and_preprocess_image).batch(32).repeat()
+batch_size = 32
+epochs = 100000
+noise_dim = 100
+num_examples_to_generate = 16
 
-def build_generator(latent_dim):
+# 생성기 모델 정의
+def make_generator_model():
     model = tf.keras.Sequential([
-        Input(shape=(latent_dim,)),  # 잠재 공간의 차원
-        layers.Dense(8*8*512, use_bias=False),  # 8x8 공간에 512개의 필터
+        layers.Input(shape=(100,)),
+        layers.Dense(7*7*256, use_bias=False),
         layers.BatchNormalization(),
         layers.LeakyReLU(),
-        layers.Reshape((8, 8, 512)),  # Dense 출력을 8x8x512로 Reshape
-        layers.Conv2DTranspose(256, (5, 5), strides=(1, 1), padding='same', use_bias=False),  # 출력: 8x8x256
+
+        layers.Reshape((7, 7, 256)),
+        layers.Conv2DTranspose(128, (5, 5), strides=(1, 1), padding='same', use_bias=False),
         layers.BatchNormalization(),
         layers.LeakyReLU(),
-        layers.Conv2DTranspose(128, (5, 5), strides=(2, 2), padding='same', use_bias=False),  # 출력: 16x16x128
+
+        layers.Conv2DTranspose(64, (5, 5), strides=(2, 2), padding='same', use_bias=False),
         layers.BatchNormalization(),
         layers.LeakyReLU(),
-        layers.Conv2DTranspose(64, (5, 5), strides=(2, 2), padding='same', use_bias=False),  # 출력: 32x32x64
-        layers.BatchNormalization(),
-        layers.LeakyReLU(),
-        layers.Conv2DTranspose(3, (5, 5), strides=(2, 2), padding='same', use_bias=False, activation='tanh'),  # 출력: 64x64x3
+
+        layers.Conv2DTranspose(3, (5, 5), strides=(2, 2), padding='same', use_bias=False, activation='tanh')
     ])
     return model
 
-def build_discriminator():
+# 판별기 모델 정의
+def make_discriminator_model():
     model = tf.keras.Sequential([
-        Input(shape=(64, 64, 3)),
+        layers.Input(shape=[28, 28, 3]),
         layers.Conv2D(64, (5, 5), strides=(2, 2), padding='same'),
         layers.LeakyReLU(),
+        layers.Dropout(0.3),
+
         layers.Conv2D(128, (5, 5), strides=(2, 2), padding='same'),
         layers.LeakyReLU(),
-        layers.Conv2D(256, (5, 5), strides=(2, 2), padding='same'),
-        layers.LeakyReLU(),
+        layers.Dropout(0.3),
+
         layers.Flatten(),
         layers.Dense(1)
     ])
     return model
 
+# 손실 함수 및 옵티마이저 설정
+cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
 
-def compile_and_train(generator, discriminator, latent_dim, dataset, epochs):
-    cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-    generator_optimizer = tf.keras.optimizers.Adam(1e-4)
-    discriminator_optimizer = tf.keras.optimizers.Adam(1e-4)
+def discriminator_loss(real_output, fake_output):
+    real_loss = cross_entropy(tf.ones_like(real_output), real_output)
+    fake_loss = cross_entropy(tf.zeros_like(fake_output), fake_output)
+    return real_loss + fake_loss
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[None, 64, 64, 3], dtype=tf.float32)])
-    def train_step(images):
-        noise = tf.random.normal([BATCH_SIZE, latent_dim])
-        with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
-            generated_images = generator(noise, training=True)
-            real_output = discriminator(images, training=True)
-            fake_output = discriminator(generated_images, training=True)
-            gen_loss = cross_entropy(tf.ones_like(fake_output), fake_output)
-            disc_loss = cross_entropy(tf.ones_like(real_output), real_output) + cross_entropy(tf.zeros_like(fake_output), fake_output)
-        gradients_of_generator = gen_tape.gradient(gen_loss, generator.trainable_variables)
-        gradients_of_discriminator = disc_tape.gradient(disc_loss, discriminator.trainable_variables)
-        generator_optimizer.apply_gradients(zip(gradients_of_generator, generator.trainable_variables))
-        discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator.trainable_variables))
+def generator_loss(fake_output):
+    return cross_entropy(tf.ones_like(fake_output), fake_output)
 
+generator = make_generator_model()
+discriminator = make_discriminator_model()
+
+generator_optimizer = tf.keras.optimizers.Adam(1e-6)
+discriminator_optimizer = tf.keras.optimizers.Adam(1e-6)
+
+# 모델 체크포인트 디렉토리 설정
+checkpoint_dir = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/checkpoints'
+os.makedirs(checkpoint_dir, exist_ok=True)
+
+# 체크포인트 콜백 설정
+checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt_{epoch:02d}.weights.h5")
+
+# 학습 단계 정의
+@tf.function
+def train_step(images):
+    noise = tf.random.normal([batch_size, noise_dim])
+
+    with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
+        generated_images = generator(noise, training=True)
+
+        real_output = discriminator(images, training=True)
+        fake_output = discriminator(generated_images, training=True)
+
+        gen_loss = generator_loss(fake_output)
+        disc_loss = discriminator_loss(real_output, fake_output)
+
+    gradients_of_generator = gen_tape.gradient(gen_loss, generator.trainable_variables)
+    gradients_of_discriminator = disc_tape.gradient(disc_loss, discriminator.trainable_variables)
+
+    generator_optimizer.apply_gradients(zip(gradients_of_generator, generator.trainable_variables))
+    discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator.trainable_variables))
+    
+    return gen_loss, disc_loss
+
+# 학습 함수 정의
+def train(dataset, epochs):
     for epoch in range(epochs):
-        for image_batch in dataset:
-            train_step(image_batch, generator, discriminator)
-        print(f'Epoch {epoch+1}/{epochs} completed')
+        train_dataset = tf.data.Dataset.from_tensor_slices(dataset).shuffle(len(dataset)).batch(batch_size)
+        gen_loss_avg = 0
+        disc_loss_avg = 0
+        step_count = 0
+        
+        for image_batch in train_dataset:
+            gen_loss, disc_loss = train_step(image_batch)
+            gen_loss_avg += gen_loss
+            disc_loss_avg += disc_loss
+            step_count += 1
+        
+        gen_loss_avg /= step_count
+        disc_loss_avg /= step_count
 
-    model_dir = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/model'
-    generator.save(os.path.join(model_dir, 'generator.keras'))
-    discriminator.save(os.path.join(model_dir, 'discriminator.keras'))
-    print("Models saved successfully.")
+        if (epoch + 1) % 10 == 0:  # 10 에포크마다 저장
+            generate_and_save_images(generator, epoch + 1, seed)
+            # 모델 체크포인트 저장
+            generator.save_weights(checkpoint_prefix.format(epoch=epoch+1))
+            discriminator.save_weights(checkpoint_prefix.format(epoch=epoch+1))
+        
+        print(f'Epoch: {epoch + 1}, gen_loss: {gen_loss_avg}, disc_loss: {disc_loss_avg}')
 
-BUFFER_SIZE = 200
-BATCH_SIZE = 32
-latent_dim = 100
-generator = build_generator(latent_dim)
-discriminator = build_discriminator()
+# 이미지 생성 및 저장 함수 정의
+def generate_and_save_images(model, epoch, test_input):
+    predictions = model(test_input, training=False)
+    fig = plt.figure(figsize=(4, 4))
+    for i in range(predictions.shape[0]):
+        plt.subplot(4, 4, i + 1)
+        plt.imshow((predictions[i, :, :, :] * 127.5 + 127.5).numpy().astype(np.uint8))  # numpy() 사용하여 변환
+        plt.axis('off')
+    os.makedirs('C:/Users/user/Desktop/coding/Children_Drawing_Generator/made_images', exist_ok=True)
+    plt.savefig(f'C:/Users/user/Desktop/coding/Children_Drawing_Generator/made_images/image_at_epoch_{epoch:04d}.png')
+    plt.close(fig)
 
-# 함수 호출
-compile_and_train(generator, discriminator, latent_dim, image_dataset, 1000)
+# 랜덤 노이즈 생성
+seed = tf.random.normal([num_examples_to_generate, noise_dim])
+
+# 학습 데이터 로드
+train_images = load_data()
+print(f'Loaded {len(train_images)} images.')
+
+# 모델 학습
+train(train_images, epochs)
