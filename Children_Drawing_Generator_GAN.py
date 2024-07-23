@@ -1,149 +1,255 @@
 import os
-import tensorflow as tf
-from tensorflow.keras import layers
+import torch
+import torchvision
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision.datasets import ImageFolder
+import torchvision.transforms as tt
+from torch.utils.data import DataLoader
+from torchvision.utils import make_grid, save_image
+from tqdm.notebook import tqdm
 import matplotlib.pyplot as plt
-import numpy as np
 
-# 데이터셋 로드 및 전처리
-def load_data():
-    dataset_path = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/dataset/dataset.npy'
-    train_images = np.load(dataset_path)
-    train_images = train_images.astype('float32')
-    train_images = (train_images - 127.5) / 127.5  # 정규화 [-1, 1]로
-    return train_images
+# 이미지 데이터의 올바른 경로로 수정
+path = "C:/Users/user/Desktop/coding/Children_Drawing_Generator/images"
+if not os.path.exists(path):
+    raise FileNotFoundError(f"Couldn't find any class folder in {path}")
 
-batch_size = 32
-epochs = 100000
-noise_dim = 100
-num_examples_to_generate = 16
+image_size = 512
+batch_size = 64
+stats = (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)
 
-# 생성기 모델 정의
-def make_generator_model():
-    model = tf.keras.Sequential([
-        layers.Input(shape=(100,)),
-        layers.Dense(7*7*256, use_bias=False),
-        layers.BatchNormalization(),
-        layers.LeakyReLU(),
+train_ds = ImageFolder(path, transform=tt.Compose([
+    tt.Resize(image_size),
+    tt.CenterCrop(image_size),
+    tt.ToTensor(),
+    tt.Normalize(*stats),
+    tt.RandomHorizontalFlip(p=0.5)
+]))
 
-        layers.Reshape((7, 7, 256)),
-        layers.Conv2DTranspose(128, (5, 5), strides=(1, 1), padding='same', use_bias=False),
-        layers.BatchNormalization(),
-        layers.LeakyReLU(),
+train_dl = DataLoader(train_ds, batch_size, shuffle=True, num_workers=3, pin_memory=True)
 
-        layers.Conv2DTranspose(64, (5, 5), strides=(2, 2), padding='same', use_bias=False),
-        layers.BatchNormalization(),
-        layers.LeakyReLU(),
+def denorm(img_tensors):
+    return img_tensors * stats[1][0] + stats[0][0]
 
-        layers.Conv2DTranspose(3, (5, 5), strides=(2, 2), padding='same', use_bias=False, activation='tanh')
-    ])
-    return model
+def save_images(images, file_path, nmax=64):
+    save_image(denorm(images.detach()[:nmax]), file_path, nrow=8)
+    print(f'Saved images to {file_path}')
 
-# 판별기 모델 정의
-def make_discriminator_model():
-    model = tf.keras.Sequential([
-        layers.Input(shape=[28, 28, 3]),
-        layers.Conv2D(64, (5, 5), strides=(2, 2), padding='same'),
-        layers.LeakyReLU(),
-        layers.Dropout(0.3),
+def get_default_device():
+    return torch.device('cpu')
 
-        layers.Conv2D(128, (5, 5), strides=(2, 2), padding='same'),
-        layers.LeakyReLU(),
-        layers.Dropout(0.3),
+def to_device(data, device):
+    if isinstance(data, (list, tuple)):
+        return [to_device(x, device) for x in data]
+    return data.to(device, non_blocking=True)
 
-        layers.Flatten(),
-        layers.Dense(1)
-    ])
-    return model
+class DeviceDataLoader():
+    def __init__(self, dl, device):
+        self.dl = dl
+        self.device = device
+    def __iter__(self):
+        for b in self.dl:
+            yield to_device(b, self.device)
+    def __len__(self):
+        return len(self.dl)
 
-# 손실 함수 및 옵티마이저 설정
-cross_entropy = tf.keras.losses.BinaryCrossentropy(from_logits=True)
+if __name__ == '__main__':
+    device = get_default_device()
+    print(device)
 
-def discriminator_loss(real_output, fake_output):
-    real_loss = cross_entropy(tf.ones_like(real_output), real_output)
-    fake_loss = cross_entropy(tf.zeros_like(fake_output), fake_output)
-    return real_loss + fake_loss
+    train_dl = DeviceDataLoader(train_dl, device)
 
-def generator_loss(fake_output):
-    return cross_entropy(tf.ones_like(fake_output), fake_output)
-
-generator = make_generator_model()
-discriminator = make_discriminator_model()
-
-generator_optimizer = tf.keras.optimizers.Adam(1e-6)
-discriminator_optimizer = tf.keras.optimizers.Adam(1e-6)
-
-# 모델 체크포인트 디렉토리 설정
-checkpoint_dir = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/checkpoints'
-os.makedirs(checkpoint_dir, exist_ok=True)
-
-# 체크포인트 콜백 설정
-checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt_{epoch:02d}.weights.h5")
-
-# 학습 단계 정의
-@tf.function
-def train_step(images):
-    noise = tf.random.normal([batch_size, noise_dim])
-
-    with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
-        generated_images = generator(noise, training=True)
-
-        real_output = discriminator(images, training=True)
-        fake_output = discriminator(generated_images, training=True)
-
-        gen_loss = generator_loss(fake_output)
-        disc_loss = discriminator_loss(real_output, fake_output)
-
-    gradients_of_generator = gen_tape.gradient(gen_loss, generator.trainable_variables)
-    gradients_of_discriminator = disc_tape.gradient(disc_loss, discriminator.trainable_variables)
-
-    generator_optimizer.apply_gradients(zip(gradients_of_generator, generator.trainable_variables))
-    discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, discriminator.trainable_variables))
-    
-    return gen_loss, disc_loss
-
-# 학습 함수 정의
-def train(dataset, epochs):
-    for epoch in range(epochs):
-        train_dataset = tf.data.Dataset.from_tensor_slices(dataset).shuffle(len(dataset)).batch(batch_size)
-        gen_loss_avg = 0
-        disc_loss_avg = 0
-        step_count = 0
+    discriminator = nn.Sequential(
+        nn.Conv2d(3, 64, kernel_size=4, stride=2, padding=1, bias=False),
+        nn.BatchNorm2d(64),
+        nn.LeakyReLU(0.2, inplace=True),
         
-        for image_batch in train_dataset:
-            gen_loss, disc_loss = train_step(image_batch)
-            gen_loss_avg += gen_loss
-            disc_loss_avg += disc_loss
-            step_count += 1
+        nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1, bias=False),
+        nn.BatchNorm2d(128),
+        nn.LeakyReLU(0.2, inplace=True),
         
-        gen_loss_avg /= step_count
-        disc_loss_avg /= step_count
-
-        if (epoch + 1) % 10 == 0:  # 10 에포크마다 저장
-            generate_and_save_images(generator, epoch + 1, seed)
-            # 모델 체크포인트 저장
-            generator.save_weights(checkpoint_prefix.format(epoch=epoch+1))
-            discriminator.save_weights(checkpoint_prefix.format(epoch=epoch+1))
+        nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1, bias=False),
+        nn.BatchNorm2d(256),
+        nn.LeakyReLU(0.2, inplace=True),
         
-        print(f'Epoch: {epoch + 1}, gen_loss: {gen_loss_avg}, disc_loss: {disc_loss_avg}')
+        nn.Conv2d(256, 512, kernel_size=4, stride=2, padding=1, bias=False),
+        nn.BatchNorm2d(512),
+        nn.LeakyReLU(0.2, inplace=True),
+        
+        nn.Conv2d(512, 1024, kernel_size=4, stride=2, padding=1, bias=False),
+        nn.BatchNorm2d(1024),
+        nn.LeakyReLU(0.2, inplace=True),
+        
+        nn.Conv2d(1024, 1, kernel_size=4, stride=1, padding=0, bias=False),
+        
+        nn.Flatten(),
+        nn.Sigmoid()
+    )
 
-# 이미지 생성 및 저장 함수 정의
-def generate_and_save_images(model, epoch, test_input):
-    predictions = model(test_input, training=False)
-    fig = plt.figure(figsize=(4, 4))
-    for i in range(predictions.shape[0]):
-        plt.subplot(4, 4, i + 1)
-        plt.imshow((predictions[i, :, :, :] * 127.5 + 127.5).numpy().astype(np.uint8))  # numpy() 사용하여 변환
-        plt.axis('off')
-    os.makedirs('C:/Users/user/Desktop/coding/Children_Drawing_Generator/made_images', exist_ok=True)
-    plt.savefig(f'C:/Users/user/Desktop/coding/Children_Drawing_Generator/made_images/image_at_epoch_{epoch:04d}.png')
-    plt.close(fig)
+    discriminator = to_device(discriminator, device)
 
-# 랜덤 노이즈 생성
-seed = tf.random.normal([num_examples_to_generate, noise_dim])
+    latent_size = 128
+    generator = nn.Sequential(
+        nn.ConvTranspose2d(latent_size, 1024, kernel_size=4, stride=1, padding=0, bias=False),
+        nn.BatchNorm2d(1024),
+        nn.ReLU(True),
+        
+        nn.ConvTranspose2d(1024, 512, kernel_size=4, stride=2, padding=1, bias=False),
+        nn.BatchNorm2d(512),
+        nn.ReLU(True),
+        
+        nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1, bias=False),
+        nn.BatchNorm2d(256),
+        nn.ReLU(True),
+        
+        nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1, bias=False),
+        nn.BatchNorm2d(128),
+        nn.ReLU(True),
+        
+        nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1, bias=False),
+        nn.BatchNorm2d(64),
+        nn.ReLU(True),
+        
+        nn.ConvTranspose2d(64, 3, kernel_size=4, stride=2, padding=1, bias=False),
+        nn.Tanh()
+    )
 
-# 학습 데이터 로드
-train_images = load_data()
-print(f'Loaded {len(train_images)} images.')
+    xb = torch.randn(batch_size, latent_size, 1, 1) # random latent tensors
+    fake_images = generator(xb)
+    print(fake_images.shape)
+    save_images(fake_images, 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/generated/generated_image.png')
 
-# 모델 학습
-train(train_images, epochs)
+    generator = to_device(generator, device)
+
+    def train_discriminator(real_images, opt_d):
+        # Clear discriminator gradients
+        opt_d.zero_grad()
+
+        # Pass real images through discriminator
+        real_preds = discriminator(real_images)
+        real_targets = torch.FloatTensor(real_preds.size()).fill_(0.9).to(device)
+        real_loss = F.binary_cross_entropy(real_preds, real_targets)
+        real_score = torch.mean(real_preds).item()
+        
+        # Generate fake images
+        latent = torch.randn(batch_size, latent_size, 1, 1, device=device)
+        fake_images = generator(latent)
+
+        # Pass fake images through discriminator
+        fake_preds = discriminator(fake_images)
+        fake_targets = torch.FloatTensor(fake_preds.size()).fill_(0.1).to(device)
+        fake_loss = F.binary_cross_entropy(fake_preds, fake_targets)
+        fake_score = torch.mean(fake_preds).item()
+
+        # Update discriminator weights
+        loss = real_loss + fake_loss
+        loss.backward()
+        opt_d.step()
+        return loss.item(), real_score, fake_score
+
+    def train_generator(opt):
+        opt.zero_grad()
+        latent = torch.randn(batch_size, latent_size, 1, 1, device=device)
+        fake_images = generator(latent)
+        preds = discriminator(fake_images)
+        targets = torch.ones(preds.size(), device=device)
+        loss = F.binary_cross_entropy(preds, targets)
+        loss.backward()
+        opt.step()
+        return loss.item()
+
+    sample_dir = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/generated'
+    os.makedirs(sample_dir, exist_ok=True)
+
+    def save_samples(index, latent_tensors, show=True):
+        fake_images = generator(latent_tensors)
+        fake_fname = '{0:0=4d}.png'.format(index)
+        save_image(denorm(fake_images), os.path.join(sample_dir, fake_fname), nrow=8)
+        print('Saving', fake_fname)
+
+    fixed_latent = torch.randn(64, latent_size, 1, 1, device=device)
+
+    save_samples(0, fixed_latent, show=False)
+
+    def save_checkpoint(epoch, generator, discriminator, opt_g, opt_d, losses_g, losses_d, real_scores, fake_scores):
+        checkpoint = {
+            'epoch': epoch,
+            'generator_state_dict': generator.state_dict(),
+            'discriminator_state_dict': discriminator.state_dict(),
+            'optimizer_g_state_dict': opt_g.state_dict(),
+            'optimizer_d_state_dict': opt_d.state_dict(),
+            'losses_g': losses_g,
+            'losses_d': losses_d,
+            'real_scores': real_scores,
+            'fake_scores': fake_scores
+        }
+        torch.save(checkpoint, os.path.join(sample_dir, f'checkpoint_{epoch}.pth'))
+        print(f"Checkpoint saved at epoch {epoch}")
+
+    def load_checkpoint(generator, discriminator, opt_g, opt_d, epoch):
+        checkpoint = torch.load(os.path.join(sample_dir, f'checkpoint_{epoch}.pth'))
+        generator.load_state_dict(checkpoint['generator_state_dict'])
+        discriminator.load_state_dict(checkpoint['discriminator_state_dict'])
+        opt_g.load_state_dict(checkpoint['optimizer_g_state_dict'])
+        opt_d.load_state_dict(checkpoint['optimizer_d_state_dict'])
+        losses_g = checkpoint['losses_g']
+        losses_d = checkpoint['losses_d']
+        real_scores = checkpoint['real_scores']
+        fake_scores = checkpoint['fake_scores']
+        print(f"Checkpoint loaded from epoch {epoch}")
+        return losses_g, losses_d, real_scores, fake_scores
+
+    def fit(epochs, lr, start_epoch=1, save_interval=10):
+        torch.cuda.empty_cache()
+        
+        # Losses & scores
+        losses_g = []
+        losses_d = []
+        real_scores = []
+        fake_scores = []
+        
+        # Create optimizers
+        opt_d = torch.optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
+        opt_g = torch.optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
+        
+        for epoch in range(start_epoch, epochs + start_epoch):
+            for real_images, _ in train_dl:
+                # Train discriminator
+                loss_d, real_score, fake_score = train_discriminator(real_images, opt_d)
+                # Train generator
+                loss_g = train_generator(opt_g)
+                
+            # Record losses & scores
+            losses_g.append(loss_g)
+            losses_d.append(loss_d)
+            real_scores.append(real_score)
+            fake_scores.append(fake_score)
+            
+            # Log losses & scores (last batch)
+            print("Epoch [{}/{}], loss_g: {:.4f}, loss_d: {:.4f}, real_score: {:.4f}, fake_score: {:.4f}".format(
+                epoch, epochs + start_epoch - 1, loss_g, loss_d, real_score, fake_score))
+        
+            # Save generated images
+            save_samples(epoch, fixed_latent, show=False)
+
+            # Save checkpoint every 'save_interval' epochs
+            if epoch % save_interval == 0:
+                save_checkpoint(epoch, generator, discriminator, opt_g, opt_d, losses_g, losses_d, real_scores, fake_scores)
+        
+        return losses_g, losses_d, real_scores, fake_scores
+
+    lr = 0.0002
+    epochs = 1000
+
+    # 체크포인트가 존재하는 경우 이를 불러오고 학습을 이어갑니다.
+    latest_checkpoint = max([int(f.split('_')[1].split('.')[0]) for f in os.listdir(sample_dir) if 'checkpoint_' in f], default=0)
+    if latest_checkpoint > 0:
+        print(f"Resuming training from epoch {latest_checkpoint}")
+        losses_g, losses_d, real_scores, fake_scores = load_checkpoint(generator, discriminator, opt_g, opt_d, latest_checkpoint)
+        history = fit(epochs, lr, start_epoch=latest_checkpoint + 1)
+    else:
+        print("Starting training from scratch")
+        history = fit(epochs, lr)
+
+    losses_g, losses_d, real_scores, fake_scores = history
