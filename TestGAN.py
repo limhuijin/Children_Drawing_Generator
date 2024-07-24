@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 
 # 경로 설정
 sample_dir = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/generated'
-checkpoint_path = os.path.join(sample_dir, 'checkpoint_1000.pth')  # 체크포인트 파일 경로 설정
-output_image_path = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/images/generated_image.png'  # 생성된 이미지 저장 경로
+checkpoint_path = os.path.join(sample_dir, 'checkpoint_550.pth')  # 체크포인트 파일 경로 설정
+output_image_path = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/images/generated_image_01.png'  # 생성된 이미지 저장 경로
 
 # 디바이스 설정
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
