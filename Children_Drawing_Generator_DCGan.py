@@ -15,7 +15,7 @@ path = "C:/Users/user/Desktop/coding/Children_Drawing_Generator/images"
 if not os.path.exists(path):
     raise FileNotFoundError(f"Couldn't find any class folder in {path}")
 
-image_size = 128  # 더 높은 해상도로 변경
+image_size = 512  # 이미지 해상도를 512로 변경
 batch_size = 32
 stats = (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)
 
