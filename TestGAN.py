@@ -6,8 +6,8 @@ from torchvision.utils import save_image, make_grid
 import matplotlib.pyplot as plt
 
 # 경로 설정
-checkpoint_path = 'C:/Users/gabri/Desktop/coding/Children_Drawing_Generator/generated/checkpoint_600.pth'  # 체크포인트 파일 경로
-output_image_base_path = 'C:/Users/gabri/Desktop/coding/Children_Drawing_Generator/images/generated_image'  # 생성된 이미지 저장 경로 (확장자 제외)
+checkpoint_path = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/generated/checkpoint_400.pth'  # 체크포인트 파일 경로
+output_image_base_path = 'C:/Users/user/Desktop/coding/Children_Drawing_Generator/images/generated_image'  # 생성된 이미지 저장 경로 (확장자 제외)
 
 # 디바이스 설정
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -19,7 +19,10 @@ class Generator(nn.Module):
     def __init__(self):
         super(Generator, self).__init__()
         self.model = nn.Sequential(
-            nn.ConvTranspose2d(latent_size, 512, kernel_size=4, stride=1, padding=0, bias=False),
+            nn.ConvTranspose2d(latent_size, 1024, kernel_size=4, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(1024),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(1024, 512, kernel_size=4, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(512),
             nn.ReLU(True),
             nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1, bias=False),
